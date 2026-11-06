@@ -1,6 +1,7 @@
 #include "options.h"
 #if (TS_MODEL!=TS_MODEL_UNDEFINED) && (DSP_MODEL!=DSP_DUMMY)
 #include "Arduino.h"
+#include <Wire.h>
 #include "touchscreen.h"
 #include "config.h"
 #include "controls.h"
@@ -34,10 +35,11 @@
   #include "../GT911_Touchscreen/TAMC_GT911.h"
   TAMC_GT911 ts = TAMC_GT911(TS_SDA, TS_SCL, TS_INT, TS_RST, 0, 0);
   typedef TP_Point TSPoint;
+#elif TS_MODEL==TS_MODEL_FT6336
+  struct TSPoint { uint16_t x; uint16_t y; };
 #endif
 
 void TouchScreen::init(uint16_t w, uint16_t h){
-  
 #if TS_MODEL==TS_MODEL_XPT2046
   #ifdef TS_SPIPINS
     TSSPI.begin(TS_SPIPINS);
@@ -50,18 +52,10 @@ void TouchScreen::init(uint16_t w, uint16_t h){
     #endif
   #endif
   ts.setRotation(config.store.fliptouch?3:1);
-#endif
-#if TS_MODEL==TS_MODEL_GT911
+#elif TS_MODEL==TS_MODEL_GT911
   ts.begin();
   ts.setRotation(config.store.fliptouch?0:2);
-#endif
-  _width  = w;
-  _height = h;
-#if TS_MODEL==TS_MODEL_GT911
-  ts.setResolution(_width, _height);
-#endif
-}
-#if TS_MODEL == TS_MODEL_FT6336
+#elif TS_MODEL==TS_MODEL_FT6336
   if (TS_RST >= 0) {
     pinMode(TS_RST, OUTPUT);
     digitalWrite(TS_RST, LOW);
@@ -74,6 +68,12 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   }
   Wire.begin(TS_SDA, TS_SCL);
 #endif
+  _width  = w;
+  _height = h;
+#if TS_MODEL==TS_MODEL_GT911
+  ts.setResolution(_width, _height);
+#endif
+}
 
 tsDirection_e TouchScreen::_tsDirection(uint16_t x, uint16_t y) {
   int16_t dX = x - _oldTouchX;
@@ -100,14 +100,13 @@ tsDirection_e TouchScreen::_tsDirection(uint16_t x, uint16_t y) {
 void TouchScreen::flip(){
 #if TS_MODEL==TS_MODEL_XPT2046
   ts.setRotation(config.store.fliptouch?3:1);
-#endif
-#if TS_MODEL==TS_MODEL_GT911
+#elif TS_MODEL==TS_MODEL_GT911
   ts.setRotation(config.store.fliptouch?0:2);
 #endif
 }
 
 void TouchScreen::loop(){
-  uint16_t touchX, touchY;
+  uint16_t touchX = 0, touchY = 0;
   static bool wastouched = true;
   static uint32_t touchLongPress;
   static tsDirection_e direct;
@@ -126,8 +125,30 @@ void TouchScreen::loop(){
     TSPoint p = ts.points[0];
     touchX = p.x;
     touchY = p.y;
+  #elif TS_MODEL==TS_MODEL_FT6336
+    TSPoint p = {0, 0};
+    Wire.beginTransmission(0x38);
+    Wire.write(0x03);
+    if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x38, (uint8_t)4) == 4) {
+      uint8_t xh = Wire.read();
+      uint8_t xl = Wire.read();
+      uint8_t yh = Wire.read();
+      uint8_t yl = Wire.read();
+      uint16_t raw_x = ((xh & 0x0F) << 8) | xl;
+      uint16_t raw_y = ((yh & 0x0F) << 8) | yl;
+      // ES3C28P 320x240 横屏坐标映射
+      if (config.store.fliptouch) {
+        p.x = 320 - raw_y;
+        p.y = raw_x;
+      } else {
+        p.x = raw_y;
+        p.y = 240 - raw_x;
+      }
+    }
+    touchX = p.x;
+    touchY = p.y;
   #endif
-  if (!wastouched) { /*     START TOUCH     */
+    if (!wastouched) { /*     START TOUCH     */
       _oldTouchX = touchX;
       _oldTouchY = touchY;
       touchVol = touchX;
@@ -203,6 +224,12 @@ bool TouchScreen::_istouched(){
   return ts.touched();
 #elif TS_MODEL==TS_MODEL_GT911
   return ts.isTouched;
+#elif TS_MODEL==TS_MODEL_FT6336
+  Wire.beginTransmission(0x38);
+  Wire.write(0x02);
+  if (Wire.endTransmission() != 0) return false;
+  if (Wire.requestFrom((uint8_t)0x38, (uint8_t)1) != 1) return false;
+  return (Wire.read() & 0x0F) > 0;
 #endif
 }
 
