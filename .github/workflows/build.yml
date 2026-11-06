@@ -29,8 +29,9 @@ jobs:
 
       - name: 编译 YoRadio 固件
         run: |
+          # 剔除无效的 MSYS 参数，保留 16M Flash、OPI PSRAM 和原生 CDC 串口
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,MSYS=dio,FlashMode=dio,FlashFreq=80,FlashSize=16M,PartitionScheme=default_16MB,PSRAM=opi \
+            --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashMode=dio,FlashFreq=80,FlashSize=16M,PartitionScheme=default_16MB,PSRAM=opi \
             --output-dir build_output \
             yoRadio/yoRadio.ino
 
@@ -59,6 +60,7 @@ jobs:
               0x8000 yoRadio.ino.partitions.bin \
               0x10000 yoRadio.ino.bin
           fi
+          echo "固件合并完成！"
 
       - name: 上传固件产物
         uses: actions/upload-artifact@v4
