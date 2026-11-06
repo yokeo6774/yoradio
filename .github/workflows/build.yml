@@ -29,9 +29,9 @@ jobs:
 
       - name: 编译 YoRadio 固件
         run: |
-          # 剔除无效的 MSYS 参数，保留 16M Flash、OPI PSRAM 和原生 CDC 串口
+          # 采用标准合法 FQBN: 启用 CDC 串口、16M Flash、16M 分区表以及 OPI PSRAM
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashMode=dio,FlashFreq=80,FlashSize=16M,PartitionScheme=default_16MB,PSRAM=opi \
+            --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=default_16MB,PSRAM=opi \
             --output-dir build_output \
             yoRadio/yoRadio.ino
 
