@@ -30,4 +30,11 @@
 #define AUDIO_PA_PIN        1
 #define AUDIO_PA_ACTIVE     0
 
+// 6. 电容触摸屏配置 (ES3C28P - FT6336G)
+#define TS_MODEL            TS_MODEL_FT6336
+#define TS_SDA              16         // I2C 数据线
+#define TS_SCL              15         // I2C 时钟线
+#define TS_INT              17         // 触摸中断脚
+#define TS_RST              18         // 触摸复位脚
+
 #endif
