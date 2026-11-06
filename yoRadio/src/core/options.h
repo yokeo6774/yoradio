@@ -211,6 +211,7 @@ The connection tables are located here https://github.com/e2002/yoradio#connecti
 #define TS_MODEL_UNDEFINED      0
 #define TS_MODEL_XPT2046        1
 #define TS_MODEL_GT911          2
+#define TS_MODEL_FT6336         3
 
 #ifndef TS_MODEL
   #define TS_MODEL              TS_MODEL_UNDEFINED
