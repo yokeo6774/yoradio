@@ -61,6 +61,19 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   ts.setResolution(_width, _height);
 #endif
 }
+#if TS_MODEL == TS_MODEL_FT6336
+  if (TS_RST >= 0) {
+    pinMode(TS_RST, OUTPUT);
+    digitalWrite(TS_RST, LOW);
+    delay(10);
+    digitalWrite(TS_RST, HIGH);
+    delay(50);
+  }
+  if (TS_INT >= 0) {
+    pinMode(TS_INT, INPUT);
+  }
+  Wire.begin(TS_SDA, TS_SCL);
+#endif
 
 tsDirection_e TouchScreen::_tsDirection(uint16_t x, uint16_t y) {
   int16_t dX = x - _oldTouchX;
