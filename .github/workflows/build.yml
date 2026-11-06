@@ -2,6 +2,12 @@ name: Build YoRadio Firmware for ES3C28P
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build.yml'
+      - 'yoRadio/**'
 
 jobs:
   build:
@@ -14,7 +20,7 @@ jobs:
       - name: 安装 Arduino CLI
         uses: arduino/setup-arduino-cli@v2
 
-      - name: 配置 ESP32 开发板核心库 (2.0.17)
+      - name: 配置 ESP32 开发板核心库
         run: |
           arduino-cli config init
           arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
@@ -23,13 +29,12 @@ jobs:
 
       - name: 编译 YoRadio 固件
         run: |
-          # 为 ES3C28P (ESP32-S3, 16MB Flash, 8MB OPI PSRAM, CDC 原生串口) 传入编译参数
           arduino-cli compile \
             --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,MSYS=dio,FlashMode=dio,FlashFreq=80,FlashSize=16M,PartitionScheme=default_16MB,PSRAM=opi \
             --output-dir build_output \
             yoRadio/yoRadio.ino
 
-      - name: 合并为单文件固件 (0x0 烧录)
+      - name: 合并为单文件固件
         run: |
           pip install esptool
           BOOT_APP0=$(find ~/.arduino15 -name "boot_app0.bin" | head -n 1)
@@ -54,7 +59,6 @@ jobs:
               0x8000 yoRadio.ino.partitions.bin \
               0x10000 yoRadio.ino.bin
           fi
-          echo "固件合并完成！"
 
       - name: 上传固件产物
         uses: actions/upload-artifact@v4
