@@ -27,32 +27,34 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio esptool
 
-      - name: 定位工程并执行编译
+      - name: 定位工程并编译
         run: |
-          # 自动检测 platformio.ini 所在的工程目录
-          if [ -f "yoRadio/platformio.ini" ]; then
-            PROJECT_DIR="yoRadio"
-          elif [ -f "platformio.ini" ]; then
-            PROJECT_DIR="."
-          else
-            echo "未找到 platformio.ini"
+          echo "=== 检索 platformio.ini 路径 ==="
+          INI_PATH=$(find . -name "platformio.ini" | head -n 1)
+          if [ -z "$INI_PATH" ]; then
+            echo "错误：仓库内未找到 platformio.ini 配置文件"
             exit 1
           fi
-          echo "Project Directory: $PROJECT_DIR"
+          PROJECT_DIR=$(dirname "$INI_PATH")
+          echo "定位到项目根目录: $PROJECT_DIR"
           cd "$PROJECT_DIR"
 
-          # 自动匹配包含 s3 的构建环境，未匹配到则默认使用 esp32-s3
-          S3_ENV=$(grep -E '^\[env:.*s3.*\]' platformio.ini | head -n 1 | tr -d '[]' | sed 's/env://')
-          if [ -z "$S3_ENV" ]; then
-            S3_ENV="esp32-s3"
+          echo "=== 查看 platformio.ini 中的所有可用环境 ==="
+          grep -E '^\[env:' platformio.ini
+
+          # 优先提取带 s3 的环境名；若无则自动选取文件中声明的第一个默认环境
+          TARGET_ENV=$(grep -E '^\[env:.*s3.*\]' platformio.ini | head -n 1 | sed -E 's/\[env:(.*)\]/\1/' | tr -d ' ')
+          if [ -z "$TARGET_ENV" ]; then
+            TARGET_ENV=$(grep -E '^\[env:.*\]' platformio.ini | head -n 1 | sed -E 's/\[env:(.*)\]/\1/' | tr -d ' ')
           fi
-          echo "Building for target environment: $S3_ENV"
+          echo ">>> 选定构建环境: $TARGET_ENV <<<"
 
-          pio run -e "$S3_ENV"
+          # 执行编译
+          pio run -e "$TARGET_ENV"
 
-          # 合并固件为单个 0x0 起始的 bin 文件
+          # 自动合并三合一固件
           BUILD_DIR=$(find .pio/build -maxdepth 1 -mindepth 1 -type d | head -n 1)
-          echo "Build directory: $BUILD_DIR"
+          echo "产物路径: $BUILD_DIR"
           if [ -f "$BUILD_DIR/bootloader.bin" ] && [ -f "$BUILD_DIR/partitions.bin" ] && [ -f "$BUILD_DIR/firmware.bin" ]; then
             python -m esptool --chip esp32s3 merge_bin \
               -o "$BUILD_DIR/merged_firmware.bin" \
@@ -62,7 +64,7 @@ jobs:
               0x0 "$BUILD_DIR/bootloader.bin" \
               0x8000 "$BUILD_DIR/partitions.bin" \
               0x10000 "$BUILD_DIR/firmware.bin"
-            echo "Successfully created merged_firmware.bin"
+            echo "单文件固件合并成功！"
           fi
 
       - name: 上传固件产物
