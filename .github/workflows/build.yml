@@ -29,9 +29,14 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@2.0.17
 
+      - name: 安装屏幕图形依赖库
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "Adafruit GFX Library"
+          arduino-cli lib install "Adafruit BusIO"
+
       - name: 编译 YoRadio 固件
         run: |
-          # 仅保留核心有效参数：启用 CDC 串口、16M Flash 与 OPI PSRAM
           arduino-cli compile \
             --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi \
             --output-dir build_output \
