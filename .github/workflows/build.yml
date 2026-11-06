@@ -29,11 +29,12 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@2.0.17
 
-      - name: 安装屏幕图形依赖库
+      - name: 安装屏幕图形与驱动依赖库
         run: |
           arduino-cli lib update-index
           arduino-cli lib install "Adafruit GFX Library"
           arduino-cli lib install "Adafruit BusIO"
+          arduino-cli lib install "Adafruit ILI9341"
 
       - name: 编译 YoRadio 固件
         run: |
