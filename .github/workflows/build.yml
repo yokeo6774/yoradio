@@ -38,8 +38,9 @@ jobs:
 
       - name: 编译 YoRadio 固件
         run: |
+          # 加入 PartitionScheme=huge_app 将程序分区扩容至 3MB
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi \
+            --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=huge_app,PSRAM=opi \
             --output-dir build_output \
             yoRadio/yoRadio.ino
 
