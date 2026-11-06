@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: 安装 Arduino CLI
         uses: arduino/setup-arduino-cli@v2
@@ -29,9 +31,9 @@ jobs:
 
       - name: 编译 YoRadio 固件
         run: |
-          # 采用标准合法 FQBN: 启用 CDC 串口、16M Flash、16M 分区表以及 OPI PSRAM
+          # 仅保留核心有效参数：启用 CDC 串口、16M Flash 与 OPI PSRAM
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=default_16MB,PSRAM=opi \
+            --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi \
             --output-dir build_output \
             yoRadio/yoRadio.ino
 
