@@ -8,10 +8,11 @@
 #include "display.h"
 #include "player.h"
 
-// ESP32-S3 硬件信号与 GPIO 矩阵支持，用于将 I2S0 MCLK 映射到 GPIO 4
+// ESP32-S3 硬件时钟矩阵信号支持
 #if CONFIG_IDF_TARGET_ESP32S3
 #include "soc/gpio_sig_map.h"
 #include "rom/gpio.h"
+#include "esp_rom_gpio.h"
 #endif
 
 #ifndef TS_X_MIN
@@ -75,10 +76,10 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   }
   Wire.begin(TS_SDA, TS_SCL);
 
-  // 2. 将 ESP32-S3 硬件 I2S0 MCLK 主时钟信号输出到 GPIO 4
+  // 2. 将 ESP32-S3 硬件 I2S0 MCLK 主时钟信号路由输出到 GPIO 4
   #if CONFIG_IDF_TARGET_ESP32S3
     pinMode(4, OUTPUT);
-    esp_rom_gpio_connect_out_signal(4, I2S0O_MCLK_OUT_IDX, false, false);
+    gpio_matrix_out(4, I2S0_MCLK_OUT_IDX, false, false);
   #endif
 
   // 3. 完整初始化 ES3C28P 板载 ES8311 音频解码芯片 (I2C 地址 0x18)
@@ -101,7 +102,7 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   writeCodec(0x06, 0x00); // LRCK 分频
   writeCodec(0x07, 0x00); // 自动分频模式
   writeCodec(0x08, 0xFF); // 保持所有时钟域使能
-  writeCodec(0x09, 0x0C); // 核心：配置 SDP 为标准 Philips I2S 16-Bit 格式 (0x0C)
+  writeCodec(0x09, 0x0C); // 核心：配置 SDP 为标准 Philips I2S 16-Bit 格式
   writeCodec(0x0A, 0x0C); // 配置 SDP 输出为 16-Bit 格式
   writeCodec(0x0B, 0x00); // 标准时钟极性
   writeCodec(0x0C, 0x00); // 禁用混音
