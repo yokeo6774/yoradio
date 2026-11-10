@@ -67,6 +67,23 @@ void TouchScreen::init(uint16_t w, uint16_t h){
     pinMode(TS_INT, INPUT);
   }
   Wire.begin(TS_SDA, TS_SCL);
+
+  // 唤醒 ES3C28P 板载 ES8311 音频解码芯片 (I2C 地址 0x18)
+  auto writeCodec = [](uint8_t reg, uint8_t val) {
+    Wire.beginTransmission(0x18);
+    Wire.write(reg);
+    Wire.write(val);
+    Wire.endTransmission();
+  };
+  writeCodec(0x00, 0x80); // 软复位芯片
+  delay(10);
+  writeCodec(0x00, 0x1F); // 启动 CSM 主控时钟
+  writeCodec(0x01, 0x30); // 配置系统分频
+  writeCodec(0x0D, 0x01); // 开启模拟偏置与基准电源
+  writeCodec(0x12, 0x00); // 启动 DAC 核心电源
+  writeCodec(0x13, 0x10); // 将 DAC 信号送入输出级
+  writeCodec(0x14, 0x1A); // 设定模拟输出增益
+  writeCodec(0x32, 0x00); // 解除数字静音
 #endif
   _width  = w;
   _height = h;
