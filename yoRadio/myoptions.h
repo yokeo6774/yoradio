@@ -26,9 +26,9 @@
 #define I2S_LRC             7
 #define I2S_DIN             8
 
-// 5. 功放使能引脚 (GPIO 1 低电平使能放音)
-#define AUDIO_PA_PIN        1
-#define AUDIO_PA_ACTIVE     0
+// 5. 功放使能控制 (FM8002E：播放时自动输出低电平解除静音)
+#define MUTE_PIN            1
+#define MUTE_VAL            HIGH       // 停止时写入 HIGH 关断功放，播放时自动拉低使能
 
 // 6. 电容触摸屏配置 (ES3C28P - FT6336G)
 #define TS_MODEL            TS_MODEL_FT6336
