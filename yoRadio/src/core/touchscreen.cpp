@@ -56,7 +56,7 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   ts.begin();
   ts.setRotation(config.store.fliptouch?0:2);
 #elif TS_MODEL==TS_MODEL_FT6336
-  // 1. FT6336G 电容触摸屏硬件复位与引脚初始化
+  // 1. FT6336G 电容触摸屏硬件复位
   if (TS_RST >= 0) {
     pinMode(TS_RST, OUTPUT);
     digitalWrite(TS_RST, LOW);
@@ -69,83 +69,52 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   }
   Wire.begin(TS_SDA, TS_SCL);
 
-  // 2. I2C 总线硬件扫描诊断 (输出至串口)
-  Serial.println("\n==========================================");
-  Serial.println("[I2C SCAN] 正在扫描 GPIO 16 (SDA) / 15 (SCL) 上的设备...");
-  uint8_t count = 0;
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    Wire.beginTransmission(addr);
-    uint8_t err = Wire.endTransmission();
-    if (err == 0) {
-      Serial.printf("[I2C SCAN] >>> 发现设备，地址: 0x%02X <<<\n", addr);
-      count++;
-    } else if (err == 4) {
-      Serial.printf("[I2C SCAN] 地址 0x%02X 发生总线未知错误\n", addr);
-    }
-  }
-  if (count == 0) {
-    Serial.println("[I2C SCAN] 严重警告: 未扫描到任何 I2C 从机设备！");
-  } else {
-    Serial.printf("[I2C SCAN] 扫描结束，共发现 %d 个外设\n", count);
-  }
-  Serial.println("==========================================\n");
+  // 2. 硬件强开 FM8002E 功放 (低电平使能放音)
+  pinMode(1, OUTPUT);
+  digitalWrite(1, LOW);
 
-  // 3. 带应答反馈的 ES8311 音频解码芯片初始化
+  // 3. 唤醒并配置板载 ES8311 音频解码芯片
   const uint8_t codec_addrs[2] = {0x18, 0x19};
-  bool codec_found = false;
-
   for (uint8_t i = 0; i < 2; i++) {
     uint8_t addr = codec_addrs[i];
     Wire.beginTransmission(addr);
     if (Wire.endTransmission() == 0) {
-      codec_found = true;
-      Serial.printf("[ES8311] 锁定音频芯片硬件地址: 0x%02X，开始写入配置...\n", addr);
-
       auto writeReg = [addr](uint8_t reg, uint8_t val) {
         Wire.beginTransmission(addr);
         Wire.write(reg);
         Wire.write(val);
-        uint8_t status = Wire.endTransmission();
-        if (status != 0) {
-          Serial.printf("[ES8311] 写入寄存器 0x%02X 失败，错误码: %d\n", reg, status);
-        }
-        return status;
+        Wire.endTransmission();
       };
 
       writeReg(0x00, 0x80); delay(20);
-      writeReg(0x00, 0x1F);
-      writeReg(0x45, 0x00);
-      writeReg(0x01, 0x7F); // 配置为 BCLK 从机模式 (无需 MCLK 引脚)
-      writeReg(0x02, 0x00);
+      writeReg(0x00, 0x1F); // CSM 主控时钟启动
+      writeReg(0x45, 0x00); // 退出测试模式
+      writeReg(0x01, 0x30); // 时钟管理器：BCLK从机1:1无降采样直通
+      writeReg(0x02, 0x00); // 禁用预分频
       writeReg(0x03, 0x10);
       writeReg(0x04, 0x10);
       writeReg(0x05, 0x00);
       writeReg(0x06, 0x00);
       writeReg(0x07, 0x00);
       writeReg(0x08, 0xFF);
-      writeReg(0x09, 0x0C); // 16-Bit I2S 标准格式
+      writeReg(0x09, 0x0C); // 标准 Philips I2S 16-Bit
       writeReg(0x0A, 0x0C);
       writeReg(0x0B, 0x00);
-      writeReg(0x0C, 0x00);
+      writeReg(0x0C, 0x00); // 解码左声道立体声混缩
       writeReg(0x0D, 0x01); // 启动模拟偏置 VMID
       writeReg(0x0E, 0x02);
       writeReg(0x0F, 0x44);
       writeReg(0x10, 0x1F);
       writeReg(0x11, 0x7F);
       writeReg(0x12, 0x00); // 启动 DAC 核心电源
-      writeReg(0x13, 0x10); // 使能 DAC 输出通道送入功放
-      writeReg(0x14, 0x10); // 设定模拟输出增益为安全中档
+      writeReg(0x13, 0x10); // 使能 DAC 输出通道
+      writeReg(0x14, 0x1A); // 设定模拟输出增益为 +3dB
       writeReg(0x15, 0x00);
-      writeReg(0x31, 0x00); // 解除硬件静音
-      writeReg(0x32, 0xBF); // 设定数字音量为 0xBF (标准 0dB 满幅输出)
-      writeReg(0x37, 0x08); // 启用抗混叠滤波
-      Serial.println("[ES8311] 核心寄存器配置序列发送完毕！\n");
+      writeReg(0x31, 0x00); // 解除静音
+      writeReg(0x32, 0xBF); // 恢复 0dB 满幅无衰减数字音量
+      writeReg(0x37, 0x08); // 开启抗混叠平滑滤波
       break;
     }
-  }
-
-  if (!codec_found) {
-    Serial.println("[ES8311] 严重错误: 0x18 与 0x19 均无应答，音频芯片未通信！\n");
   }
 #endif
   _width  = w;
@@ -216,7 +185,6 @@ void TouchScreen::loop(){
       uint8_t yl = Wire.read();
       uint16_t raw_x = ((xh & 0x0F) << 8) | xl;
       uint16_t raw_y = ((yh & 0x0F) << 8) | yl;
-      // ES3C28P 320x240 横屏坐标映射
       if (config.store.fliptouch) {
         p.x = 320 - raw_y;
         p.y = raw_x;
