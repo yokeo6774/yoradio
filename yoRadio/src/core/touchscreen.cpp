@@ -8,13 +8,6 @@
 #include "display.h"
 #include "player.h"
 
-// ESP32-S3 硬件时钟矩阵信号支持
-#if CONFIG_IDF_TARGET_ESP32S3
-#include "soc/gpio_sig_map.h"
-#include "rom/gpio.h"
-#include "esp_rom_gpio.h"
-#endif
-
 #ifndef TS_X_MIN
   #define TS_X_MIN              400
 #endif
@@ -63,7 +56,7 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   ts.begin();
   ts.setRotation(config.store.fliptouch?0:2);
 #elif TS_MODEL==TS_MODEL_FT6336
-  // 1. 触摸屏 FT6336G 硬件复位与引脚准备
+  // 1. FT6336G 电容触摸屏硬件复位
   if (TS_RST >= 0) {
     pinMode(TS_RST, OUTPUT);
     digitalWrite(TS_RST, LOW);
@@ -76,48 +69,62 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   }
   Wire.begin(TS_SDA, TS_SCL);
 
-  // 2. 将 ESP32-S3 硬件 I2S0 MCLK 主时钟信号路由输出到 GPIO 4
-  #if CONFIG_IDF_TARGET_ESP32S3
-    pinMode(4, OUTPUT);
-    gpio_matrix_out(4, I2S0_MCLK_OUT_IDX, false, false);
-  #endif
+  // 2. 双地址遍历唤醒 ES8311 (自动兼容 0x18 与 0x19)
+  const uint8_t codec_addrs[2] = {0x18, 0x19};
+  for (uint8_t i = 0; i < 2; i++) {
+    uint8_t addr = codec_addrs[i];
+    
+    // 快速握手嗅探设备是否存在
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() != 0) {
+      continue; // 该地址无应答，跳过
+    }
 
-  // 3. 完整初始化 ES3C28P 板载 ES8311 音频解码芯片 (I2C 地址 0x18)
-  auto writeCodec = [](uint8_t reg, uint8_t val) {
-    Wire.beginTransmission(0x18);
-    Wire.write(reg);
-    Wire.write(val);
-    Wire.endTransmission();
-  };
+    auto writeReg = [addr](uint8_t reg, uint8_t val) {
+      Wire.beginTransmission(addr);
+      Wire.write(reg);
+      Wire.write(val);
+      Wire.endTransmission();
+    };
 
-  writeCodec(0x00, 0x80); // 软复位芯片
-  delay(20);
-  writeCodec(0x00, 0x1F); // 启动 CSM 主控时钟与所有内部逻辑
-  writeCodec(0x45, 0x00); // 退出低功耗测试模式
-  writeCodec(0x01, 0x30); // 启动时钟管理器并使能时钟
-  writeCodec(0x02, 0x10); // 配置系统预分频
-  writeCodec(0x03, 0x10); // ADC 时钟设置
-  writeCodec(0x04, 0x10); // DAC 时钟设置
-  writeCodec(0x05, 0x00); // BCLK 分频
-  writeCodec(0x06, 0x00); // LRCK 分频
-  writeCodec(0x07, 0x00); // 自动分频模式
-  writeCodec(0x08, 0xFF); // 保持所有时钟域使能
-  writeCodec(0x09, 0x0C); // 核心：配置 SDP 为标准 Philips I2S 16-Bit 格式
-  writeCodec(0x0A, 0x0C); // 配置 SDP 输出为 16-Bit 格式
-  writeCodec(0x0B, 0x00); // 标准时钟极性
-  writeCodec(0x0C, 0x00); // 禁用混音
-  writeCodec(0x0D, 0x01); // 启动模拟偏置基准电源 (Vref / VMID)
-  writeCodec(0x0E, 0x02); // 启动模拟内部参考电压生成
-  writeCodec(0x0F, 0x44); // 配置模拟偏置电流
-  writeCodec(0x10, 0x1F); // 开启低噪声偏置电阻
-  writeCodec(0x11, 0x7F); // 开启模拟驱动级电源
-  writeCodec(0x12, 0x00); // 启动 DAC 核心电源
-  writeCodec(0x13, 0x10); // 使能 DAC 输出通道并送入功放
-  writeCodec(0x14, 0x1A); // 设定模拟输出增益为 +3.5dB
-  writeCodec(0x15, 0x00); // 禁用反相
-  writeCodec(0x31, 0x00); // 解除 DAC 硬件静音
-  writeCodec(0x32, 0xC0); // 核心：设定 DAC 数字音量为 0xC0 (标准 0dB 满幅输出)
-  writeCodec(0x37, 0x08); // 启用 DAC 内部平滑与低通抗混叠滤波
+    // 软复位与 CSM 主状态机初始化
+    writeReg(0x00, 0x80); 
+    delay(20);
+    writeReg(0x00, 0x1F); 
+    writeReg(0x45, 0x00); // 退出低功耗测试模式
+
+    // 时钟管理：配置为 BCLK 从机模式 (0x7F)，无需 GPIO 4 MCLK 主时钟
+    writeReg(0x01, 0x7F); 
+    writeReg(0x02, 0x00); // 预分频
+    writeReg(0x03, 0x10); 
+    writeReg(0x04, 0x10); 
+    writeReg(0x05, 0x00); 
+    writeReg(0x06, 0x00); 
+    writeReg(0x07, 0x00); 
+    writeReg(0x08, 0xFF); 
+
+    // 数字音频串行接口：标准 Philips I2S 16-Bit 格式 (0x0C)
+    writeReg(0x09, 0x0C); 
+    writeReg(0x0A, 0x0C); 
+    writeReg(0x0B, 0x00); 
+    writeReg(0x0C, 0x00); 
+
+    // 模拟偏置基准源与核心上电
+    writeReg(0x0D, 0x01); // 开启模拟偏置 (VMID)
+    writeReg(0x0E, 0x02); 
+    writeReg(0x0F, 0x44); 
+    writeReg(0x10, 0x1F); 
+    writeReg(0x11, 0x7F); 
+    writeReg(0x12, 0x00); // 启动 DAC 核心电源
+    writeReg(0x13, 0x10); // 使能模拟输出通道送入功放
+    writeReg(0x14, 0x10); // 设定模拟输出增益为安全中档，消除失真
+    writeReg(0x15, 0x00); 
+
+    // DAC 增益与滤波控制
+    writeReg(0x31, 0x00); // 解除硬件静音
+    writeReg(0x32, 0xBF); // 设定数字音量为 0xBF (0dB 满幅无衰减)
+    writeReg(0x37, 0x08); // 启用抗混叠平滑滤波
+  }
 #endif
   _width  = w;
   _height = h;
