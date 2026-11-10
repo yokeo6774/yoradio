@@ -75,15 +75,17 @@ void TouchScreen::init(uint16_t w, uint16_t h){
     Wire.write(val);
     Wire.endTransmission();
   };
-  writeCodec(0x00, 0x80); // 软复位芯片
+  writeCodec(0x00, 0x80); // 软复位
   delay(10);
   writeCodec(0x00, 0x1F); // 启动 CSM 主控时钟
   writeCodec(0x01, 0x30); // 配置系统分频
+  writeCodec(0x09, 0x00); // 设定 SDP 为标准 16-Bit I2S
   writeCodec(0x0D, 0x01); // 开启模拟偏置与基准电源
   writeCodec(0x12, 0x00); // 启动 DAC 核心电源
   writeCodec(0x13, 0x10); // 将 DAC 信号送入输出级
-  writeCodec(0x14, 0x1A); // 设定模拟输出增益
-  writeCodec(0x32, 0x00); // 解除数字静音
+  writeCodec(0x14, 0x10); // 设定模拟输出增益为适中档位
+  writeCodec(0x31, 0x00); // 解除静音
+  writeCodec(0x32, 0xBF); // 恢复 0dB 满幅输出
 #endif
   _width  = w;
   _height = h;
@@ -153,7 +155,6 @@ void TouchScreen::loop(){
       uint8_t yl = Wire.read();
       uint16_t raw_x = ((xh & 0x0F) << 8) | xl;
       uint16_t raw_y = ((yh & 0x0F) << 8) | yl;
-      // ES3C28P 320x240 横屏坐标映射
       if (config.store.fliptouch) {
         p.x = 320 - raw_y;
         p.y = raw_x;
