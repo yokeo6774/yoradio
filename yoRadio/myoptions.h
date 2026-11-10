@@ -19,16 +19,15 @@
 #define ES8311_SDA          16
 #define ES8311_SCL          15
 
-// 4. I2S 数字音频传输引脚
-#define I2S_MCLK            4
+// 4. I2S 数字音频传输引脚 (交换 6 与 8，纠正 DAC 与 MIC 引脚)
 #define I2S_BCLK            5
-#define I2S_DOUT            6
 #define I2S_LRC             7
-#define I2S_DIN             8
+#define I2S_DOUT            8          // 核心更正：ES3C28P 放音输出脚为 GPIO 8
+#define I2S_DIN             6          // 麦克风录音输入脚为 GPIO 6
 
-// 5. 功放使能控制 (FM8002E：播放时自动输出低电平解除静音)
+// 5. 功放使能控制 (改回 HIGH：播放时输出 LOW 唤醒 FM8002E 功放)
 #define MUTE_PIN            1
-#define MUTE_VAL            LOW       // 停止时写入 HIGH 关断功放，播放时自动拉低使能
+#define MUTE_VAL            HIGH
 
 // 6. 电容触摸屏配置 (ES3C28P - FT6336G)
 #define TS_MODEL            TS_MODEL_FT6336
