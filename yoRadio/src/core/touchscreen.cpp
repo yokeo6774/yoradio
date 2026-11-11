@@ -109,10 +109,10 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   pinMode(1, OUTPUT);
   digitalWrite(1, LOW);
 
-  // 3. 核心修复：显式注册 5 个引脚，将 GPIO 4 绑定为 MCLK (BCLK=5, LRC=7, DOUT=6, DIN=8, MCK=4)
+  // 3. 核心修复：向 Audio 引擎注册 5 个引脚，显式绑定 GPIO 4 为 MCLK
   player.setPinout(5, 7, 6, 8, 4);
 
-  // 4. 初次预热 ES8311
+  // 4. 初始化 ES8311 解码芯片
   es8311_init_chip();
 #endif
   _width  = w;
@@ -158,17 +158,6 @@ void TouchScreen::loop(){
   static uint32_t touchLongPress;
   static tsDirection_e direct;
   static uint16_t touchVol, touchStation;
-  
-  // 核心锁频逻辑：当播放流启动且 I2S 硬件时钟开始振荡后，立即向 ES8311 写入锁频配置
-  static bool last_running = false;
-  bool is_running = player.isRunning();
-  if (is_running && !last_running) {
-    digitalWrite(1, LOW);
-    player.setPinout(5, 7, 6, 8, 4);
-    es8311_init_chip();
-  }
-  last_running = is_running;
-
   if (!_checklpdelay(20, _touchdelay)) return;
 #if TS_MODEL==TS_MODEL_GT911
   ts.read();
@@ -261,3 +250,33 @@ void TouchScreen::loop(){
           display.putRequest(NEWMODE, display.mode() == PLAYER ? STATIONS : PLAYER);
         }
       }
+      direct = TSD_STAY;
+    }
+  }
+  wastouched = istouched;
+}
+
+bool TouchScreen::_checklpdelay(int m, uint32_t &tstamp) {
+  if (millis() - tstamp > m) {
+    tstamp = millis();
+    return true;
+  } else {
+    return false;
+  }
+}
+
+bool TouchScreen::_istouched(){
+#if TS_MODEL==TS_MODEL_XPT2046
+  return ts.touched();
+#elif TS_MODEL==TS_MODEL_GT911
+  return ts.isTouched;
+#elif TS_MODEL==TS_MODEL_FT6336
+  Wire.beginTransmission(0x38);
+  Wire.write(0x02);
+  if (Wire.endTransmission() != 0) return false;
+  if (Wire.requestFrom((uint8_t)0x38, (uint8_t)1) != 1) return false;
+  return (Wire.read() & 0x0F) > 0;
+#endif
+}
+
+#endif  // TS_MODEL!=TS_MODEL_UNDEFINED
