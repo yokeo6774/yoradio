@@ -19,11 +19,12 @@
 #define ES8311_SDA          16
 #define ES8311_SCL          15
 
-// 4. I2S 数字音频传输引脚 (ES3C28P 准确硬件定义)
+// 4. I2S 数字音频传输引脚
 #define I2S_BCLK            5
 #define I2S_LRC             7
-#define I2S_DOUT            6          // 真正放音数据输出脚必须是 GPIO 6
-#define I2S_DIN             8          // 麦克风录音输入脚为 GPIO 8
+#define I2S_DOUT            6
+#define I2S_DIN             8
+#define I2S_MCLK            4          // 补齐 MCLK 宏定义，让底层原生引擎持续输出主时钟
 
 // 5. 功放使能控制
 #define MUTE_PIN            1
