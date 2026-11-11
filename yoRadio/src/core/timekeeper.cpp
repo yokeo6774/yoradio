@@ -1,373 +1,325 @@
 #include "options.h"
+#if (TS_MODEL!=TS_MODEL_UNDEFINED) && (DSP_MODEL!=DSP_DUMMY)
 #include "Arduino.h"
-#include "timekeeper.h"
+#include <Wire.h>
+#include "touchscreen.h"
 #include "config.h"
-#include "network.h"
+#include "controls.h"
 #include "display.h"
 #include "player.h"
-#include "netserver.h"
-#include "rtcsupport.h"
-#include "../displays/tools/l10n.h"
-#include "../pluginsManager/pluginsManager.h"
-#ifdef USE_NEXTION
-#include "../displays/nextion.h"
-#endif
-#if DSP_MODEL==DSP_DUMMY
-#define DUMMYDISPLAY
-#endif
 
-#if RTCSUPPORTED
-  //#define TIME_SYNC_INTERVAL  24*60*60*1000
-  #define TIME_SYNC_INTERVAL  config.store.timeSyncIntervalRTC*60*60*1000
-#else
-  #define TIME_SYNC_INTERVAL  config.store.timeSyncInterval*60*1000
+#ifndef TS_X_MIN
+  #define TS_X_MIN              400
 #endif
-#define WEATHER_SYNC_INTERVAL config.store.weatherSyncInterval*60*1000
-
-#define SYNC_STACK_SIZE       1024 * 4
-#define SYNC_TASK_CORE        0
-#define SYNC_TASK_PRIORITY    3
-#define WEATHER_STRING_L      254
-
-#ifdef HEAP_DBG
-  void printHeapFragmentationInfo(const char* title){
-    size_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
-    size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    float fragmentation = 100.0 * (1.0 - ((float)largestBlock / (float)freeHeap));
-    Serial.printf("\n****** %s ******\n", title);
-    Serial.printf("* Free heap: %u bytes\n", freeHeap);
-    Serial.printf("* Largest free block: %u bytes\n", largestBlock);
-    Serial.printf("* Fragmentation: %.2f%%\n", fragmentation);
-    Serial.printf("*************************************\n\n");
-  }
-  #define HEAP_INFO() printHeapFragmentationInfo(__PRETTY_FUNCTION__)
-#else
-  #define HEAP_INFO()
+#ifndef TS_X_MAX
+  #define TS_X_MAX              3800
+#endif
+#ifndef TS_Y_MIN
+  #define TS_Y_MIN              260
+#endif
+#ifndef TS_Y_MAX
+  #define TS_Y_MAX              3800
+#endif
+#ifndef TS_STEPS
+  #define TS_STEPS              40
 #endif
 
-TimeKeeper timekeeper;
-
-void _syncTask(void *pvParameters) {
-  if (timekeeper.forceWeather && timekeeper.forceTimeSync) {
-    timekeeper.timeTask();
-    timekeeper.weatherTask();
-  } 
-  else if (timekeeper.forceWeather) {
-    timekeeper.weatherTask();
-  }
-  else if (timekeeper.forceTimeSync) {
-    timekeeper.timeTask();
-  }
-  timekeeper.busy = false;
-  vTaskDelete(NULL);
-}
-
-TimeKeeper::TimeKeeper(){
-  busy          = false;
-  forceWeather  = true;
-  forceTimeSync = true;
-  _returnPlayerTime = _doAfterTime = 0;
-  weatherBuf=NULL;
-  #if (DSP_MODEL!=DSP_DUMMY || defined(USE_NEXTION)) && !defined(HIDE_WEATHER)
-    weatherBuf = (char *) malloc(sizeof(char) * WEATHER_STRING_L);
-    memset(weatherBuf, 0, WEATHER_STRING_L);
+#if TS_MODEL==TS_MODEL_XPT2046
+  #ifdef TS_SPIPINS
+    SPIClass  TSSPI(HSPI);
   #endif
-}
-
-bool TimeKeeper::loop0(){ // core0 (display)
-  if (network.status != CONNECTED) return true;
-  uint32_t currentTime = millis();
-  static uint32_t _last1s = 0;
-  static uint32_t _last2s = 0;
-  static uint32_t _last5s = 0;
-  if (currentTime - _last1s >= 1000) { // 1sec
-    _last1s = currentTime;
-//#ifndef DUMMYDISPLAY
-#if !defined(DUMMYDISPLAY) || defined(USE_NEXTION)
-  #ifndef UPCLOCK_CORE1
-    _upClock();
-  #endif
+  #include <XPT2046_Touchscreen.h>
+  XPT2046_Touchscreen ts(TS_CS);
+  typedef TS_Point TSPoint;
+#elif TS_MODEL==TS_MODEL_GT911
+  #include "../GT911_Touchscreen/TAMC_GT911.h"
+  TAMC_GT911 ts = TAMC_GT911(TS_SDA, TS_SCL, TS_INT, TS_RST, 0, 0);
+  typedef TP_Point TSPoint;
+#elif TS_MODEL==TS_MODEL_FT6336
+  struct TSPoint { uint16_t x; uint16_t y; };
 #endif
-  }
-  if (currentTime - _last2s >= 2000) { // 2sec
-    _last2s = currentTime;
-    _upRSSI();
-  }
-  if (currentTime - _last5s >= 5000) { // 5sec
-    _last5s = currentTime;
-    //HEAP_INFO();
-  }
 
-  return true; // just in case
+static void es8311_write(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(0x18);
+  Wire.write(reg);
+  Wire.write(val);
+  Wire.endTransmission();
 }
 
-bool TimeKeeper::loop1(){ // core1 (player)
-  uint32_t currentTime = millis();
-  static uint32_t _last1s = 0;
-  static uint32_t _last2s = 0;
-  if (currentTime - _last1s >= 1000) { // 1sec
-    pm.on_ticker();
-    _last1s = currentTime;
-//#ifndef DUMMYDISPLAY
-#if !defined(DUMMYDISPLAY) || defined(USE_NEXTION)
-  #ifdef UPCLOCK_CORE1
-    _upClock();
-  #endif
-#endif
-    _upScreensaver();
-    _upSDPos();
-    _returnPlayer();
-    _doAfterWait();
-  }
-  if (currentTime - _last2s >= 2000) { // 2sec
-    _last2s = currentTime;
-  }
-
-  //#ifdef DUMMYDISPLAY
-  #if defined(DUMMYDISPLAY) && !defined(USE_NEXTION)
-  return true;
-  #endif
-  // Sync weather & time
-  static uint32_t lastWeatherTime = 0;
-  if (currentTime - lastWeatherTime >= WEATHER_SYNC_INTERVAL) {
-    lastWeatherTime = currentTime;
-    forceWeather = true;
-  }
-  static uint32_t lastTimeTime = 0;
-  if (currentTime - lastTimeTime >= TIME_SYNC_INTERVAL) {
-    lastTimeTime = currentTime;
-    forceTimeSync = true;
-  }
-  if (!busy && (forceWeather || forceTimeSync) && network.status == CONNECTED) {
-    busy = true;
-    //config.setTimeConf();
-    xTaskCreatePinnedToCore(
-      _syncTask,
-      "syncTask",
-      SYNC_STACK_SIZE,
-      NULL,           // Params
-      SYNC_TASK_PRIORITY,
-      NULL,           // Descriptor
-      SYNC_TASK_CORE
-    );
-  }
-  
-  return true; // just in case
+static uint8_t es8311_read(uint8_t reg) {
+  Wire.beginTransmission(0x18);
+  Wire.write(reg);
+  if (Wire.endTransmission() != 0) return 0xFF;
+  if (Wire.requestFrom((uint8_t)0x18, (uint8_t)1) != 1) return 0xFF;
+  return Wire.read();
 }
 
-void TimeKeeper::waitAndReturnPlayer(uint8_t time_s){
-  _returnPlayerTime = millis()+time_s*1000;
-}
-void TimeKeeper::_returnPlayer(){
-  if(_returnPlayerTime>0 && millis()>=_returnPlayerTime){
-    _returnPlayerTime = 0;
-    display.putRequest(NEWMODE, PLAYER);
-  }
+// 唤醒并完整注入 ES8311 内部参考基准与真正的时钟使能序列
+static void es8311_init_chip() {
+  es8311_write(0x00, 0x80); delay(10); // 软复位
+  es8311_write(0x00, 0x1F); // 启动 CSM 主控
+  es8311_write(0x45, 0x00); // 退出低功耗测试模式
+
+  // 1. 核心修复：开启 MCLK_ON (Bit 7) 与 BCLK_ON (Bit 6)，真正启动内部时钟树
+  es8311_write(0x01, 0x7F); // 0x7F: Bit 7/6 开启，配置 BCLK 锁相从机模式
+  es8311_write(0x02, 0x00); // 关闭预分频
+  es8311_write(0x03, 0x10); 
+  es8311_write(0x04, 0x10); 
+  es8311_write(0x05, 0x00); 
+  es8311_write(0x06, 0x00); 
+  es8311_write(0x07, 0x00); 
+  es8311_write(0x08, 0xFF); 
+
+  // 2. 串口协议配置：16-Bit Philips I2S 格式
+  es8311_write(0x09, 0x0C); 
+  es8311_write(0x0A, 0x0C); 
+  es8311_write(0x0B, 0x00); 
+  es8311_write(0x0C, 0x00); // 解码左声道
+
+  // 3. 关键硬件修复：打通内部模拟基准源与 DAC 模拟输出驱动
+  es8311_write(0x0D, 0x01); // 启动模拟基准偏置 VMID
+  es8311_write(0x0E, 0x02); 
+  es8311_write(0x0F, 0x44); 
+  es8311_write(0x10, 0x1F); 
+  es8311_write(0x11, 0x7F); 
+  es8311_write(0x12, 0x00); // 启动 DAC 核心转换电源
+  es8311_write(0x13, 0x10); // 打通 DAC 模拟输出到后级功放
+  es8311_write(0x14, 0x1A); // 模拟输出增益 (+3.5dB)
+  es8311_write(0x15, 0x40); // 模拟输出级工作模式使能
+  es8311_write(0x1B, 0x0A); // 内部参考电压基准寄存器 1
+  es8311_write(0x1C, 0x6A); // 内部参考电压基准寄存器 2
+  es8311_write(0x44, 0x58); // 打通内部参考电压直供 DAC 模拟核心
+  es8311_write(0x37, 0x08); // 开启抗混叠平滑滤波
+
+  // 4. 数字音量与解除硬件静音
+  es8311_write(0x32, 0xBF); // 恢复 0dB 满幅无衰减数字音量
+  es8311_write(0x31, 0x00); // 解除硬件静音
 }
 
-void TimeKeeper::waitAndDo(uint8_t time_s, void (*callback)()){
-  _doAfterTime = millis()+time_s*1000;
-  _aftercallback = callback;
-}
-void TimeKeeper::_doAfterWait(){
-  if(_doAfterTime>0 && millis()>=_doAfterTime){
-    _doAfterTime = 0;
-    _aftercallback();
-  }
-}
-
-void TimeKeeper::_upClock(){
-#if RTCSUPPORTED
-  if(config.isRTCFound()) rtc.getTime(&network.timeinfo);
-#else
-  if(network.timeinfo.tm_year>100 || network.status == SDREADY) {
-    network.timeinfo.tm_sec++;
-    mktime(&network.timeinfo);
-  }
-#endif
-  if(display.ready()) display.putRequest(CLOCK);
+static void es8311_dump_status() {
+  Serial.println("\n--- [ES8311 寄存器回读测试] ---");
+  Serial.printf("芯片 ID: 0x%02X 0x%02X (标准应为 0x83 0x11)\n", es8311_read(0xFD), es8311_read(0xFE));
+  Serial.printf("0x00 (CSM状态): 0x%02X (应为 0x1F)\n", es8311_read(0x00));
+  Serial.printf("0x01 (时钟管理): 0x%02X (修正后应为 0x7F)\n", es8311_read(0x01));
+  Serial.printf("0x12 (DAC电源):  0x%02X (应为 0x00)\n", es8311_read(0x12));
+  Serial.printf("0x13 (输出通路): 0x%02X (应为 0x10)\n", es8311_read(0x13));
+  Serial.printf("0x31 (静音寄存): 0x%02X (应为 0x00)\n", es8311_read(0x31));
+  Serial.printf("0x32 (数字音量): 0x%02X (应为 0xBF)\n", es8311_read(0x32));
+  Serial.println("--------------------------------\n");
 }
 
-void TimeKeeper::_upScreensaver(){
-#ifndef DSP_LCD
-  if(!display.ready()) return;
-  if(config.store.screensaverEnabled && display.mode()==PLAYER && !player.isRunning()){
-    config.screensaverTicks++;
-    if(config.screensaverTicks > config.store.screensaverTimeout+SCREENSAVERSTARTUPDELAY){
-      if(config.store.screensaverBlank){
-        display.putRequest(NEWMODE, SCREENBLANK);
-      }else{
-        display.putRequest(NEWMODE, SCREENSAVER);
-      }
-      config.screensaverTicks=SCREENSAVERSTARTUPDELAY;
-    }
-  }
-  if(config.store.screensaverPlayingEnabled && display.mode()==PLAYER && player.isRunning()){
-    config.screensaverPlayingTicks++;
-    if(config.screensaverPlayingTicks > config.store.screensaverPlayingTimeout*60+SCREENSAVERSTARTUPDELAY){
-      if(config.store.screensaverPlayingBlank){
-        display.putRequest(NEWMODE, SCREENBLANK);
-      }else{
-        display.putRequest(NEWMODE, SCREENSAVER);
-      }
-      config.screensaverPlayingTicks=SCREENSAVERSTARTUPDELAY;
-    }
-  }
-#endif
-}
-
-void TimeKeeper::_upRSSI(){
-  if(network.status == CONNECTED){
-    netserver.setRSSI(WiFi.RSSI());
-    netserver.requestOnChange(NRSSI, 0);
-    if(display.ready()) display.putRequest(DSPRSSI, netserver.getRSSI());
-  }
-#ifdef USE_SD
-  if(display.mode()!=SDCHANGE) player.sendCommand({PR_CHECKSD, 0});
-#endif
-  player.sendCommand({PR_VUTONUS, 0});
-}
-
-void TimeKeeper::_upSDPos(){
-  if(player.isRunning() && config.getMode()==PM_SDCARD) netserver.requestOnChange(SDPOS, 0);
-}
-
-void TimeKeeper::timeTask(){
-  static uint8_t tsFailCnt = 0;
-  config.waitConnection();
-  if(getLocalTime(&network.timeinfo)){
-    tsFailCnt = 0;
-    forceTimeSync = false;
-    mktime(&network.timeinfo);
-    display.putRequest(CLOCK, 1);
-    network.requestTimeSync(true);
-    #if RTCSUPPORTED
-      if (config.isRTCFound()) rtc.setTime(&network.timeinfo);
+void TouchScreen::init(uint16_t w, uint16_t h){
+#if TS_MODEL==TS_MODEL_XPT2046
+  #ifdef TS_SPIPINS
+    TSSPI.begin(TS_SPIPINS);
+    ts.begin(TSSPI);
+  #else
+    #if TS_HSPI
+      ts.begin(SPI2);
+    #else
+      ts.begin();
     #endif
+  #endif
+  ts.setRotation(config.store.fliptouch?3:1);
+#elif TS_MODEL==TS_MODEL_GT911
+  ts.begin();
+  ts.setRotation(config.store.fliptouch?0:2);
+#elif TS_MODEL==TS_MODEL_FT6336
+  if (TS_RST >= 0) {
+    pinMode(TS_RST, OUTPUT);
+    digitalWrite(TS_RST, LOW);
+    delay(10);
+    digitalWrite(TS_RST, HIGH);
+    delay(50);
+  }
+  if (TS_INT >= 0) {
+    pinMode(TS_INT, INPUT);
+  }
+  Wire.begin(TS_SDA, TS_SCL);
+
+  // 硬件常开功放 (低电平使能)
+  pinMode(1, OUTPUT);
+  digitalWrite(1, LOW);
+
+  // 注册 I2S 引脚与初始化
+  player.setPinout(5, 7, 6);
+  es8311_init_chip();
+  es8311_dump_status();
+#endif
+  _width  = w;
+  _height = h;
+#if TS_MODEL==TS_MODEL_GT911
+  ts.setResolution(_width, _height);
+#endif
+}
+
+tsDirection_e TouchScreen::_tsDirection(uint16_t x, uint16_t y) {
+  int16_t dX = x - _oldTouchX;
+  int16_t dY = y - _oldTouchY;
+  if (abs(dX) > 20 || abs(dY) > 20) {
+    if (abs(dX) > abs(dY)) {
+      if (dX > 0) {
+        return TSD_RIGHT;
+      } else {
+        return TSD_LEFT;
+      }
+    } else {
+      if (dY > 0) {
+        return TSD_DOWN;
+      } else {
+        return TSD_UP;
+      }
+    }
+  } else {
+    return TDS_REQUEST;
+  }
+}
+
+void TouchScreen::flip(){
+#if TS_MODEL==TS_MODEL_XPT2046
+  ts.setRotation(config.store.fliptouch?3:1);
+#elif TS_MODEL==TS_MODEL_GT911
+  ts.setRotation(config.store.fliptouch?0:2);
+#endif
+}
+
+void TouchScreen::loop(){
+  uint16_t touchX = 0, touchY = 0;
+  static bool wastouched = true;
+  static uint32_t touchLongPress;
+  static tsDirection_e direct;
+  static uint16_t touchVol, touchStation;
+
+  // 播放流起播且 I2S 硬件时钟建立后，重新写入时钟门控开启序列
+  static bool last_running = false;
+  bool is_running = player.isRunning();
+  if (is_running && !last_running) {
+    digitalWrite(1, LOW);
+    es8311_init_chip();
+    Serial.println("[PLAYER] ES8311 时钟门控已开启并锁频，模拟 DAC 已激活！");
+    es8311_dump_status();
+  }
+  last_running = is_running;
+
+  if (!_checklpdelay(20, _touchdelay)) return;
+#if TS_MODEL==TS_MODEL_GT911
+  ts.read();
+#endif
+  bool istouched = _istouched();
+  if(istouched){
+  #if TS_MODEL==TS_MODEL_XPT2046
+    TSPoint p = ts.getPoint();
+    touchX = map(p.x, TS_X_MIN, TS_X_MAX, 0, _width);
+    touchY = map(p.y, TS_Y_MIN, TS_Y_MAX, 0, _height);
+  #elif TS_MODEL==TS_MODEL_GT911
+    TSPoint p = ts.points[0];
+    touchX = p.x;
+    touchY = p.y;
+  #elif TS_MODEL==TS_MODEL_FT6336
+    TSPoint p = {0, 0};
+    Wire.beginTransmission(0x38);
+    Wire.write(0x03);
+    if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x38, (uint8_t)4) == 4) {
+      uint8_t xh = Wire.read();
+      uint8_t xl = Wire.read();
+      uint8_t yh = Wire.read();
+      uint8_t yl = Wire.read();
+      uint16_t raw_x = ((xh & 0x0F) << 8) | xl;
+      uint16_t raw_y = ((yh & 0x0F) << 8) | yl;
+      if (config.store.fliptouch) {
+        p.x = 320 - raw_y;
+        p.y = raw_x;
+      } else {
+        p.x = raw_y;
+        p.y = 240 - raw_x;
+      }
+    }
+    touchX = p.x;
+    touchY = p.y;
+  #endif
+    if (!wastouched) { /*     START TOUCH     */
+      _oldTouchX = touchX;
+      _oldTouchY = touchY;
+      touchVol = touchX;
+      touchStation = touchY;
+      direct = TDS_REQUEST;
+      touchLongPress=millis();
+    } else { /*     SWIPE TOUCH     */
+      direct = _tsDirection(touchX, touchY);
+      switch (direct) {
+        case TSD_LEFT:
+        case TSD_RIGHT: {
+            touchLongPress=millis();
+            if(display.mode()==PLAYER || display.mode()==VOL){
+              int16_t xDelta = map(abs(touchVol - touchX), 0, _width, 0, TS_STEPS);
+              display.putRequest(NEWMODE, VOL);
+              if (xDelta>1) {
+                controlsEvent((touchVol - touchX)<0);
+                touchVol = touchX;
+              }
+            }
+            break;
+          }
+        case TSD_UP:
+        case TSD_DOWN: {
+            touchLongPress=millis();
+            if(display.mode()==PLAYER || display.mode()==STATIONS){
+              int16_t yDelta = map(abs(touchStation - touchY), 0, _height, 0, TS_STEPS);
+              display.putRequest(NEWMODE, STATIONS);
+              if (yDelta>1) {
+                controlsEvent((touchStation - touchY)<0);
+                touchStation = touchY;
+              }
+            }
+            break;
+          }
+        default:
+            break;
+      }
+    }
+    if (config.store.dbgtouch) {
+      Serial.print(", x = ");
+      Serial.print(p.x);
+      Serial.print(", y = ");
+      Serial.println(p.y);
+    }
   }else{
-    if(tsFailCnt<4){
-      forceTimeSync = true;
-      tsFailCnt++;
-    }else{
-      forceTimeSync = false;
-      tsFailCnt=0;
+    if (wastouched) {/*     END TOUCH     */
+      if (direct == TDS_REQUEST) {
+        uint32_t pressTicks = millis()-touchLongPress;
+        if( pressTicks < BTN_PRESS_TICKS*2){
+          if(pressTicks > 50) onBtnClick(EVT_BTNCENTER);
+        }else{
+          display.putRequest(NEWMODE, display.mode() == PLAYER ? STATIONS : PLAYER);
+        }
+      }
+      direct = TSD_STAY;
     }
   }
-}
-void TimeKeeper::weatherTask(){
-  forceWeather = false;
-  if(!weatherBuf || strlen(config.store.weatherkey)==0 || !config.store.showweather) return;
-  _getWeather();
+  wastouched = istouched;
 }
 
-bool _getWeather() {
-#if (DSP_MODEL!=DSP_DUMMY || defined(USE_NEXTION)) && !defined(HIDE_WEATHER)
-  static AsyncClient * weatherClient = NULL;
-  static const char* host = "api.openweathermap.org";
-  if(weatherClient) return false;
-  weatherClient = new AsyncClient();
-  if(!weatherClient) return false;
-
-  weatherClient->onError([](void * arg, AsyncClient * client, int error){
-    Serial.println("##WEATHER###: connection error");
-    weatherClient = NULL;
-    delete client;
-  }, NULL);
-
-  weatherClient->onConnect([](void * arg, AsyncClient * client){
-    weatherClient->onError(NULL, NULL);
-    weatherClient->onDisconnect([](void * arg, AsyncClient * c){ weatherClient = NULL; delete c; }, NULL);
-    
-    char httpget[250] = {0};
-    sprintf(httpget, "GET /data/2.5/weather?lat=%s&lon=%s&units=%s&lang=%s&appid=%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", config.store.weatherlat, config.store.weatherlon, LANG::weatherUnits, LANG::weatherLang, config.store.weatherkey, host);
-    client->write(httpget);
-    
-    client->onData([](void * arg, AsyncClient * c, void * data, size_t len){
-      uint8_t * d = (uint8_t*)data;
-      const char *bodyStart = strstr((const char*)d, "\r\n\r\n");
-      if (bodyStart != NULL) {
-        bodyStart += 4;
-        size_t bodyLen = len - (bodyStart - (const char*)d);
-        char line[bodyLen+1];
-        memcpy(line, bodyStart, bodyLen);
-        line[bodyLen] = '\0';
-        /* parse it */
-        char *cursor;
-        char desc[120], icon[5];
-        float tempf, tempfl, wind_speed;
-        int hum, press, wind_deg;
-        bool result = true;
-
-        cursor = strstr(line, "\"description\":\"");
-        if (cursor) { sscanf(cursor, "\"description\":\"%119[^\"]", desc); }else{ Serial.println("##WEATHER###: description not found !"); result=false; }
-        cursor = strstr(line, "\"icon\":\"");
-        if (cursor) { sscanf(cursor, "\"icon\":\"%4[^\"]", icon); }else{ Serial.println("##WEATHER###: icon not found !"); result=false; }
-        cursor = strstr(line, "\"temp\":");
-        if (cursor) { sscanf(cursor, "\"temp\":%f", &tempf); }else{ Serial.println("##WEATHER###: temp not found !"); result=false; }
-        cursor = strstr(line, "\"pressure\":");
-        if (cursor) { sscanf(cursor, "\"pressure\":%d", &press); }else{ Serial.println("##WEATHER###: pressure not found !"); result=false; }
-        cursor = strstr(line, "\"humidity\":");
-        if (cursor) { sscanf(cursor, "\"humidity\":%d", &hum); }else{ Serial.println("##WEATHER###: humidity not found !"); result=false; }
-        cursor = strstr(line, "\"feels_like\":");
-        if (cursor) { sscanf(cursor, "\"feels_like\":%f", &tempfl); }else{ Serial.println("##WEATHER###: feels_like not found !"); result=false; }
-        cursor = strstr(line, "\"grnd_level\":");
-        if (cursor) { sscanf(cursor, "\"grnd_level\":%d", &press); }
-        cursor = strstr(line, "\"speed\":");
-        if (cursor) { sscanf(cursor, "\"speed\":%f", &wind_speed); }else{ Serial.println("##WEATHER###: wind speed not found !"); result=false; }
-        cursor = strstr(line, "\"deg\":");
-        if (cursor) { sscanf(cursor, "\"deg\":%d", &wind_deg); }else{ Serial.println("##WEATHER###: wind deg not found !"); result=false; }
-        press = press / 1.333;
-
-        if(!result) return;
-
-        #ifdef USE_NEXTION
-          nextion.putcmdf("press_txt.txt=\"%dmm\"", press);
-          nextion.putcmdf("hum_txt.txt=\"%d%%\"", hum);
-          char cmd[30];
-          snprintf(cmd, sizeof(cmd)-1,"temp_txt.txt=\"%.1f\"", tempf);
-          nextion.putcmd(cmd);
-          int iconofset;
-          if(strstr(icon,"01")!=NULL)      iconofset = 0;
-          else if(strstr(icon,"02")!=NULL) iconofset = 1;
-          else if(strstr(icon,"03")!=NULL) iconofset = 2;
-          else if(strstr(icon,"04")!=NULL) iconofset = 3;
-          else if(strstr(icon,"09")!=NULL) iconofset = 4;
-          else if(strstr(icon,"10")!=NULL) iconofset = 5;
-          else if(strstr(icon,"11")!=NULL) iconofset = 6;
-          else if(strstr(icon,"13")!=NULL) iconofset = 7;
-          else if(strstr(icon,"50")!=NULL) iconofset = 8;
-          else                             iconofset = 9;
-          nextion.putcmd("cond_img.pic", 50+iconofset);
-          nextion.weatherVisible(1);
-        #endif
-        
-        Serial.printf("##WEATHER###: description: %s, temp:%.1f C, pressure:%dmmHg, humidity:%d%%, wind: %d\n", desc, tempf, press, hum, (int)(wind_deg/22.5));
-        #ifdef WEATHER_FMT_SHORT
-        sprintf(timekeeper.weatherBuf, weatherFmt, tempf, press, hum);
-        #else
-          #if EXT_WEATHER
-            sprintf(timekeeper.weatherBuf, LANG::weatherFmt, desc, tempf, tempfl, press, hum, wind_speed, LANG::wind[(int)(wind_deg/22.5)]);
-          #else
-            sprintf(timekeeper.weatherBuf, LANG::weatherFmt, desc, tempf, press, hum);
-          #endif
-        #endif
-        display.putRequest(NEWWEATHER);
-      } else {
-        Serial.println("##WEATHER###: weather not found !");
-      }
-    }, NULL); // <-- client->onData
-  }, NULL); // <-- weatherClient->onConnect
-  config.waitConnection();
-  if(!weatherClient->connect(host, 80)){
-    Serial.println("##WEATHER###: connection failed");
-    AsyncClient * client = weatherClient;
-    weatherClient = NULL;
-    delete client;
+bool TouchScreen::_checklpdelay(int m, uint32_t &tstamp) {
+  if (millis() - tstamp > m) {
+    tstamp = millis();
+    return true;
+  } else {
+    return false;
   }
-
-  return true;
-#endif // if (DSP_MODEL!=DSP_DUMMY || defined(USE_NEXTION)) && !defined(HIDE_WEATHER)
-  return false;
 }
 
-//******************
+bool TouchScreen::_istouched(){
+#if TS_MODEL==TS_MODEL_XPT2046
+  return ts.touched();
+#elif TS_MODEL==TS_MODEL_GT911
+  return ts.isTouched;
+#elif TS_MODEL==TS_MODEL_FT6336
+  Wire.beginTransmission(0x38);
+  Wire.write(0x02);
+  if (Wire.endTransmission() != 0) return false;
+  if (Wire.requestFrom((uint8_t)0x38, (uint8_t)1) != 1) return false;
+  return (Wire.read() & 0x0F) > 0;
+#endif
+}
+
+#endif  // TS_MODEL!=TS_MODEL_UNDEFINED
