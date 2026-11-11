@@ -69,11 +69,14 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   }
   Wire.begin(TS_SDA, TS_SCL);
 
-  // 2. 硬件常开 FM8002E 功放 (低电平使能放音)
+  // 2. 硬件强开 FM8002E 功放 (低电平使能放音)
   pinMode(1, OUTPUT);
   digitalWrite(1, LOW);
 
-  // 3. 唤醒并以 BCLK 从机模式驱动 ES8311 音频解码芯片
+  // 3. 核心修复：直接配置 YoRadio 底层 Audio 引擎，向 GPIO 4 供给 256*Fs MCLK 主时钟
+  player.audio.setPinout(5, 7, 6, 4);
+
+  // 4. 配置 ES8311 解码芯片，接入外部 MCLK 时钟模式
   const uint8_t codec_addrs[2] = {0x18, 0x19};
   for (uint8_t i = 0; i < 2; i++) {
     uint8_t addr = codec_addrs[i];
@@ -86,9 +89,9 @@ void TouchScreen::init(uint16_t w, uint16_t h){
         Wire.endTransmission();
       };
 
-      writeReg(0x00, 0x1F); // 启动 CSM 主状态机
+      writeReg(0x00, 0x1F); // CSM 主控时钟启动
       writeReg(0x45, 0x00); // 退出低功耗测试模式
-      writeReg(0x01, 0xBF); // 核心修复：启用 BCLK 从机时钟输入模式 (彻底免除 MCLK 引脚)
+      writeReg(0x01, 0x30); // 核心：开启外部 MCLK 引脚 (GPIO 4) 输入模式并锁有时钟
       writeReg(0x02, 0x00); // 禁用预分频
       writeReg(0x03, 0x10);
       writeReg(0x04, 0x10);
@@ -105,13 +108,13 @@ void TouchScreen::init(uint16_t w, uint16_t h){
       writeReg(0x0F, 0x44);
       writeReg(0x10, 0x1F);
       writeReg(0x11, 0x7F);
-      writeReg(0x12, 0x00); // 启动 DAC 核心转换电源
-      writeReg(0x13, 0x30); // 核心修复：打通 DAC 到模拟输出级通道 (LineOut + HP)
+      writeReg(0x12, 0x00); // 启动 DAC 核心电源
+      writeReg(0x13, 0x10); // 打通 DAC 到输出通道
       writeReg(0x14, 0x1A); // 设定模拟输出增益为 +3dB
       writeReg(0x15, 0x00);
       writeReg(0x31, 0x00); // 解除静音
-      writeReg(0x32, 0xBF); // 恢复 0dB 满幅无衰减数字音量
-      writeReg(0x37, 0x08); // 开启抗混叠平滑滤波
+      writeReg(0x32, 0xC0); // 恢复 0dB 满幅输出
+      writeReg(0x37, 0x08); // 开启滤波
       break;
     }
   }
