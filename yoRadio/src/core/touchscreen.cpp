@@ -39,7 +39,6 @@
   struct TSPoint { uint16_t x; uint16_t y; };
 #endif
 
-// ES8311 专用寄存器写入
 static void es8311_write(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(0x18);
   Wire.write(reg);
@@ -47,7 +46,6 @@ static void es8311_write(uint8_t reg, uint8_t val) {
   Wire.endTransmission();
 }
 
-// ES8311 寄存器读取
 static uint8_t es8311_read(uint8_t reg) {
   Wire.beginTransmission(0x18);
   Wire.write(reg);
@@ -56,50 +54,48 @@ static uint8_t es8311_read(uint8_t reg) {
   return Wire.read();
 }
 
-// 唤醒并完整配置 ES8311 解码核心
+// 唤醒并完整注入 ES8311 内部参考基准与 BCLK 锁相驱动
 static void es8311_init_chip() {
   es8311_write(0x00, 0x80); delay(10); // 软复位
   es8311_write(0x00, 0x1F); // 启动 CSM 主控
   es8311_write(0x45, 0x00); // 退出低功耗测试模式
-  es8311_write(0x01, 0x30); // 锁定主时钟
-  es8311_write(0x02, 0x00); // 关闭预分频
-  es8311_write(0x03, 0x10);
-  es8311_write(0x04, 0x10);
+
+  // 1. 时钟管理：配置为 BCLK 纯从机倍频模式 (完全免除对 GPIO 4 MCLK 的依赖)
+  es8311_write(0x01, 0xBF); // clk_src = BCLK
+  es8311_write(0x02, 0x18); // BCLK*8 倍频进入 DIG_MCLK
+  es8311_write(0x03, 0x10); 
+  es8311_write(0x04, 0x20); // DAC 内部数字滤波器分频
   es8311_write(0x05, 0x00);
   es8311_write(0x06, 0x00);
   es8311_write(0x07, 0x00);
   es8311_write(0x08, 0xFF);
-  es8311_write(0x09, 0x0C); // 16-Bit Philips I2S 格式
-  es8311_write(0x0A, 0x0C);
-  es8311_write(0x0B, 0x00);
-  es8311_write(0x0C, 0x00); // 解码左声道
-  es8311_write(0x0D, 0x01); // 启动模拟偏置 VMID
-  es8311_write(0x0E, 0x02);
-  es8311_write(0x0F, 0x44);
-  es8311_write(0x10, 0x1F);
-  es8311_write(0x11, 0x7F);
-  es8311_write(0x12, 0x00); // 启动 DAC 核心电源
-  es8311_write(0x13, 0x10); // 打通模拟输出到功放
-  es8311_write(0x14, 0x1A); // 模拟输出增益 (+3dB)
-  es8311_write(0x15, 0x00);
-  es8311_write(0x31, 0x00); // 解除静音
-  es8311_write(0x32, 0xC0); // 0dB 数字全幅输出
-  es8311_write(0x37, 0x08); // 开启抗混叠平滑滤波
-}
 
-// 打印 ES8311 寄存器回读状态
-static void es8311_dump_status() {
-  Serial.println("\n--- [ES8311 寄存器回读测试] ---");
-  uint8_t id1 = es8311_read(0xFD);
-  uint8_t id2 = es8311_read(0xFE);
-  Serial.printf("芯片 ID: 0x%02X 0x%02X (标准应为 0x83 0x11)\n", id1, id2);
-  Serial.printf("0x00 (CSM状态): 0x%02X (应为 0x1F)\n", es8311_read(0x00));
-  Serial.printf("0x01 (时钟管理): 0x%02X (应为 0x30)\n", es8311_read(0x01));
-  Serial.printf("0x12 (DAC电源):  0x%02X (应为 0x00)\n", es8311_read(0x12));
-  Serial.printf("0x13 (输出通路): 0x%02X (应为 0x10)\n", es8311_read(0x13));
-  Serial.printf("0x31 (静音寄存): 0x%02X (应为 0x00)\n", es8311_read(0x31));
-  Serial.printf("0x32 (数字音量): 0x%02X (应为 0xC0)\n", es8311_read(0x32));
-  Serial.println("--------------------------------\n");
+  // 2. 串口协议：标准 Philips I2S 16-Bit
+  es8311_write(0x09, 0x0C); 
+  es8311_write(0x0A, 0x0C); 
+  es8311_write(0x0B, 0x00); 
+  es8311_write(0x0C, 0x00); // 解码左声道
+
+  // 3. 关键硬件修复：注入内部模拟偏置与 DAC 驱动源
+  es8311_write(0x0D, 0x01); // 启动模拟偏置 VMID
+  es8311_write(0x0E, 0x02); 
+  es8311_write(0x0F, 0x44); 
+  es8311_write(0x10, 0x1F); 
+  es8311_write(0x11, 0x7F); 
+  es8311_write(0x12, 0x00); // 启动 DAC 核心电源
+  es8311_write(0x13, 0x10); // 打通模拟输出
+  es8311_write(0x14, 0x1A); // 模拟输出增益 (+3.5dB)
+  es8311_write(0x15, 0x40); // 关键：模拟输出级工作模式使能
+  es8311_write(0x1B, 0x0A); // 关键：内部基准电压校准寄存器 1
+  es8311_write(0x1C, 0x6A); // 关键：内部基准电压校准寄存器 2
+  es8311_write(0x44, 0x58); // 关键：打通内部参考电压直供 DAC 模拟核心
+  es8311_write(0x37, 0x08); // 开启抗混叠平滑滤波
+
+  // 4. 数字音量与解除硬件静音
+  es8311_write(0x32, 0xBF); // 恢复 0dB 满幅无衰减输出
+  uint8_t mute_reg = es8311_read(0x31);
+  mute_reg &= 0x9F;         // 清除 MUTE 标志位
+  es8311_write(0x31, mute_reg);
 }
 
 void TouchScreen::init(uint16_t w, uint16_t h){
@@ -131,16 +127,13 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   }
   Wire.begin(TS_SDA, TS_SCL);
 
-  // 强开功放 (低电平使能)
+  // 硬件常开功放 (拉低使能)
   pinMode(1, OUTPUT);
   digitalWrite(1, LOW);
 
-  // 注册 5 引脚 I2S
-  player.setPinout(5, 7, 6, 8, 4);
-
-  // 初次配置与状态打印
+  // 初始化 I2S 引脚与 ES8311
+  player.setPinout(5, 7, 6);
   es8311_init_chip();
-  es8311_dump_status();
 #endif
   _width  = w;
   _height = h;
@@ -186,15 +179,13 @@ void TouchScreen::loop(){
   static tsDirection_e direct;
   static uint16_t touchVol, touchStation;
 
-  // 核心：当网络流开始播放且 I2S 硬件时钟开始振荡后，重新对 ES8311 注入配置并打印状态
+  // 起播瞬间在稳定的音频流下重新锁定一次内部基准
   static bool last_running = false;
   bool is_running = player.isRunning();
   if (is_running && !last_running) {
     digitalWrite(1, LOW);
-    player.setPinout(5, 7, 6, 8, 4);
     es8311_init_chip();
-    Serial.println("[PLAYER] 检测到音频流已起播，已重新激活 ES8311 并锁定时钟！");
-    es8311_dump_status();
+    Serial.println("[PLAYER] ES8311 内部参考基准与 DAC 驱动已成功激活！");
   }
   last_running = is_running;
 
