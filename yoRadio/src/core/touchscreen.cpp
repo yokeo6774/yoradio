@@ -39,7 +39,6 @@
   struct TSPoint { uint16_t x; uint16_t y; };
 #endif
 
-// ES8311 专用寄存器快速写入函数
 static void es8311_write(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(0x18);
   Wire.write(reg);
@@ -47,11 +46,10 @@ static void es8311_write(uint8_t reg, uint8_t val) {
   Wire.endTransmission();
 }
 
-// 唤醒并完整配置 ES8311
 static void es8311_init_chip() {
   es8311_write(0x00, 0x1F); // 启动 CSM 主控
   es8311_write(0x45, 0x00); // 退出低功耗测试模式
-  es8311_write(0x01, 0x30); // 锁定外部主时钟
+  es8311_write(0x01, 0x30); // 锁定 GPIO 4 输入的外部 MCLK 主时钟
   es8311_write(0x02, 0x00); // 关闭预分频
   es8311_write(0x03, 0x10);
   es8311_write(0x04, 0x10);
@@ -59,7 +57,7 @@ static void es8311_init_chip() {
   es8311_write(0x06, 0x00);
   es8311_write(0x07, 0x00);
   es8311_write(0x08, 0xFF);
-  es8311_write(0x09, 0x0C); // 16-Bit 标准 Philips I2S 格式
+  es8311_write(0x09, 0x0C); // 16-Bit Philips I2S 格式
   es8311_write(0x0A, 0x0C);
   es8311_write(0x0B, 0x00);
   es8311_write(0x0C, 0x00); // 解码左声道
@@ -69,10 +67,10 @@ static void es8311_init_chip() {
   es8311_write(0x10, 0x1F);
   es8311_write(0x11, 0x7F);
   es8311_write(0x12, 0x00); // 启动 DAC 核心电源
-  es8311_write(0x13, 0x10); // 打通 DAC 模拟输出通路送入功放
-  es8311_write(0x14, 0x1A); // 模拟输出增益设为标准档位 (+3dB)
+  es8311_write(0x13, 0x10); // 打通模拟输出到功放
+  es8311_write(0x14, 0x1A); // 模拟输出增益 (+3dB)
   es8311_write(0x15, 0x00);
-  es8311_write(0x31, 0x00); // 解除硬件静音
+  es8311_write(0x31, 0x00); // 解除静音
   es8311_write(0x32, 0xC0); // 0dB 数字全幅输出
   es8311_write(0x37, 0x08); // 开启抗混叠平滑滤波
 }
@@ -111,10 +109,10 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   pinMode(1, OUTPUT);
   digitalWrite(1, LOW);
 
-  // 3. 修正：直接通过 player 对象注册 I2S 引脚与 MCLK 主时钟
-  player.setPinout(5, 7, 6);
+  // 3. 核心修复：显式注册 5 个引脚，将 GPIO 4 绑定为 MCLK (BCLK=5, LRC=7, DOUT=6, DIN=8, MCK=4)
+  player.setPinout(5, 7, 6, 8, 4);
 
-  // 4. 初次配置 ES8311
+  // 4. 初次预热 ES8311
   es8311_init_chip();
 #endif
   _width  = w;
@@ -161,13 +159,15 @@ void TouchScreen::loop(){
   static tsDirection_e direct;
   static uint16_t touchVol, touchStation;
   
-  // 保持功放始终拉低开启，并在播放开始时补发一次时钟锁定指令
-  static bool codec_synced = false;
-  if (!codec_synced && player.isRunning()) {
+  // 核心锁频逻辑：当播放流启动且 I2S 硬件时钟开始振荡后，立即向 ES8311 写入锁频配置
+  static bool last_running = false;
+  bool is_running = player.isRunning();
+  if (is_running && !last_running) {
     digitalWrite(1, LOW);
+    player.setPinout(5, 7, 6, 8, 4);
     es8311_init_chip();
-    codec_synced = true;
   }
+  last_running = is_running;
 
   if (!_checklpdelay(20, _touchdelay)) return;
 #if TS_MODEL==TS_MODEL_GT911
@@ -261,33 +261,3 @@ void TouchScreen::loop(){
           display.putRequest(NEWMODE, display.mode() == PLAYER ? STATIONS : PLAYER);
         }
       }
-      direct = TSD_STAY;
-    }
-  }
-  wastouched = istouched;
-}
-
-bool TouchScreen::_checklpdelay(int m, uint32_t &tstamp) {
-  if (millis() - tstamp > m) {
-    tstamp = millis();
-    return true;
-  } else {
-    return false;
-  }
-}
-
-bool TouchScreen::_istouched(){
-#if TS_MODEL==TS_MODEL_XPT2046
-  return ts.touched();
-#elif TS_MODEL==TS_MODEL_GT911
-  return ts.isTouched;
-#elif TS_MODEL==TS_MODEL_FT6336
-  Wire.beginTransmission(0x38);
-  Wire.write(0x02);
-  if (Wire.endTransmission() != 0) return false;
-  if (Wire.requestFrom((uint8_t)0x38, (uint8_t)1) != 1) return false;
-  return (Wire.read() & 0x0F) > 0;
-#endif
-}
-
-#endif  // TS_MODEL!=TS_MODEL_UNDEFINED
