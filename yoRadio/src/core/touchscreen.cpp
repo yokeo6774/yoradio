@@ -39,6 +39,44 @@
   struct TSPoint { uint16_t x; uint16_t y; };
 #endif
 
+// ES8311 专用寄存器快速写入函数
+static void es8311_write(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(0x18);
+  Wire.write(reg);
+  Wire.write(val);
+  Wire.endTransmission();
+}
+
+// 唤醒并完整配置 ES8311
+static void es8311_init_chip() {
+  es8311_write(0x00, 0x1F); // 启动 CSM 主控
+  es8311_write(0x45, 0x00); // 退出低功耗测试模式
+  es8311_write(0x01, 0x30); // 锁定外部主时钟
+  es8311_write(0x02, 0x00); // 关闭预分频
+  es8311_write(0x03, 0x10);
+  es8311_write(0x04, 0x10);
+  es8311_write(0x05, 0x00);
+  es8311_write(0x06, 0x00);
+  es8311_write(0x07, 0x00);
+  es8311_write(0x08, 0xFF);
+  es8311_write(0x09, 0x0C); // 16-Bit 标准 Philips I2S 格式
+  es8311_write(0x0A, 0x0C);
+  es8311_write(0x0B, 0x00);
+  es8311_write(0x0C, 0x00); // 解码左声道
+  es8311_write(0x0D, 0x01); // 启动模拟偏置 VMID
+  es8311_write(0x0E, 0x02);
+  es8311_write(0x0F, 0x44);
+  es8311_write(0x10, 0x1F);
+  es8311_write(0x11, 0x7F);
+  es8311_write(0x12, 0x00); // 启动 DAC 核心电源
+  es8311_write(0x13, 0x10); // 打通 DAC 模拟输出通路送入功放
+  es8311_write(0x14, 0x1A); // 模拟输出增益设为标准档位 (+3dB)
+  es8311_write(0x15, 0x00);
+  es8311_write(0x31, 0x00); // 解除硬件静音
+  es8311_write(0x32, 0xC0); // 0dB 数字全幅输出
+  es8311_write(0x37, 0x08); // 开启抗混叠平滑滤波
+}
+
 void TouchScreen::init(uint16_t w, uint16_t h){
 #if TS_MODEL==TS_MODEL_XPT2046
   #ifdef TS_SPIPINS
@@ -69,55 +107,15 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   }
   Wire.begin(TS_SDA, TS_SCL);
 
-  // 2. 硬件强开 FM8002E 功放 (低电平使能放音)
+  // 2. 强开 FM8002E 功放 (低电平使能放音)
   pinMode(1, OUTPUT);
   digitalWrite(1, LOW);
 
-  // 3. 核心修复：直接配置 YoRadio 底层 Audio 引擎，向 GPIO 4 供给 256*Fs MCLK 主时钟
-  player.audio.setPinout(5, 7, 6, 4);
+  // 3. 修正：直接通过 player 对象注册 I2S 引脚与 MCLK 主时钟
+  player.setPinout(5, 7, 6);
 
-  // 4. 配置 ES8311 解码芯片，接入外部 MCLK 时钟模式
-  const uint8_t codec_addrs[2] = {0x18, 0x19};
-  for (uint8_t i = 0; i < 2; i++) {
-    uint8_t addr = codec_addrs[i];
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0) {
-      auto writeReg = [addr](uint8_t reg, uint8_t val) {
-        Wire.beginTransmission(addr);
-        Wire.write(reg);
-        Wire.write(val);
-        Wire.endTransmission();
-      };
-
-      writeReg(0x00, 0x1F); // CSM 主控时钟启动
-      writeReg(0x45, 0x00); // 退出低功耗测试模式
-      writeReg(0x01, 0x30); // 核心：开启外部 MCLK 引脚 (GPIO 4) 输入模式并锁有时钟
-      writeReg(0x02, 0x00); // 禁用预分频
-      writeReg(0x03, 0x10);
-      writeReg(0x04, 0x10);
-      writeReg(0x05, 0x00);
-      writeReg(0x06, 0x00);
-      writeReg(0x07, 0x00);
-      writeReg(0x08, 0xFF);
-      writeReg(0x09, 0x0C); // 标准 Philips I2S 16-Bit 格式
-      writeReg(0x0A, 0x0C);
-      writeReg(0x0B, 0x00);
-      writeReg(0x0C, 0x00); // 解码左声道
-      writeReg(0x0D, 0x01); // 启动模拟基准电源 VMID
-      writeReg(0x0E, 0x02);
-      writeReg(0x0F, 0x44);
-      writeReg(0x10, 0x1F);
-      writeReg(0x11, 0x7F);
-      writeReg(0x12, 0x00); // 启动 DAC 核心电源
-      writeReg(0x13, 0x10); // 打通 DAC 到输出通道
-      writeReg(0x14, 0x1A); // 设定模拟输出增益为 +3dB
-      writeReg(0x15, 0x00);
-      writeReg(0x31, 0x00); // 解除静音
-      writeReg(0x32, 0xC0); // 恢复 0dB 满幅输出
-      writeReg(0x37, 0x08); // 开启滤波
-      break;
-    }
-  }
+  // 4. 初次配置 ES8311
+  es8311_init_chip();
 #endif
   _width  = w;
   _height = h;
@@ -162,6 +160,15 @@ void TouchScreen::loop(){
   static uint32_t touchLongPress;
   static tsDirection_e direct;
   static uint16_t touchVol, touchStation;
+  
+  // 保持功放始终拉低开启，并在播放开始时补发一次时钟锁定指令
+  static bool codec_synced = false;
+  if (!codec_synced && player.isRunning()) {
+    digitalWrite(1, LOW);
+    es8311_init_chip();
+    codec_synced = true;
+  }
+
   if (!_checklpdelay(20, _touchdelay)) return;
 #if TS_MODEL==TS_MODEL_GT911
   ts.read();
