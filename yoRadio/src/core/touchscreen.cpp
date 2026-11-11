@@ -39,6 +39,7 @@
   struct TSPoint { uint16_t x; uint16_t y; };
 #endif
 
+// ES8311 专用寄存器写入
 static void es8311_write(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(0x18);
   Wire.write(reg);
@@ -46,10 +47,21 @@ static void es8311_write(uint8_t reg, uint8_t val) {
   Wire.endTransmission();
 }
 
+// ES8311 寄存器读取
+static uint8_t es8311_read(uint8_t reg) {
+  Wire.beginTransmission(0x18);
+  Wire.write(reg);
+  if (Wire.endTransmission() != 0) return 0xFF;
+  if (Wire.requestFrom((uint8_t)0x18, (uint8_t)1) != 1) return 0xFF;
+  return Wire.read();
+}
+
+// 唤醒并完整配置 ES8311 解码核心
 static void es8311_init_chip() {
+  es8311_write(0x00, 0x80); delay(10); // 软复位
   es8311_write(0x00, 0x1F); // 启动 CSM 主控
   es8311_write(0x45, 0x00); // 退出低功耗测试模式
-  es8311_write(0x01, 0x30); // 锁定 GPIO 4 输入的外部 MCLK 主时钟
+  es8311_write(0x01, 0x30); // 锁定主时钟
   es8311_write(0x02, 0x00); // 关闭预分频
   es8311_write(0x03, 0x10);
   es8311_write(0x04, 0x10);
@@ -75,6 +87,21 @@ static void es8311_init_chip() {
   es8311_write(0x37, 0x08); // 开启抗混叠平滑滤波
 }
 
+// 打印 ES8311 寄存器回读状态
+static void es8311_dump_status() {
+  Serial.println("\n--- [ES8311 寄存器回读测试] ---");
+  uint8_t id1 = es8311_read(0xFD);
+  uint8_t id2 = es8311_read(0xFE);
+  Serial.printf("芯片 ID: 0x%02X 0x%02X (标准应为 0x83 0x11)\n", id1, id2);
+  Serial.printf("0x00 (CSM状态): 0x%02X (应为 0x1F)\n", es8311_read(0x00));
+  Serial.printf("0x01 (时钟管理): 0x%02X (应为 0x30)\n", es8311_read(0x01));
+  Serial.printf("0x12 (DAC电源):  0x%02X (应为 0x00)\n", es8311_read(0x12));
+  Serial.printf("0x13 (输出通路): 0x%02X (应为 0x10)\n", es8311_read(0x13));
+  Serial.printf("0x31 (静音寄存): 0x%02X (应为 0x00)\n", es8311_read(0x31));
+  Serial.printf("0x32 (数字音量): 0x%02X (应为 0xC0)\n", es8311_read(0x32));
+  Serial.println("--------------------------------\n");
+}
+
 void TouchScreen::init(uint16_t w, uint16_t h){
 #if TS_MODEL==TS_MODEL_XPT2046
   #ifdef TS_SPIPINS
@@ -92,7 +119,6 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   ts.begin();
   ts.setRotation(config.store.fliptouch?0:2);
 #elif TS_MODEL==TS_MODEL_FT6336
-  // 1. FT6336G 电容触摸屏硬件复位
   if (TS_RST >= 0) {
     pinMode(TS_RST, OUTPUT);
     digitalWrite(TS_RST, LOW);
@@ -105,15 +131,16 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   }
   Wire.begin(TS_SDA, TS_SCL);
 
-  // 2. 强开 FM8002E 功放 (低电平使能放音)
+  // 强开功放 (低电平使能)
   pinMode(1, OUTPUT);
   digitalWrite(1, LOW);
 
-  // 3. 核心修复：向 Audio 引擎注册 5 个引脚，显式绑定 GPIO 4 为 MCLK
+  // 注册 5 引脚 I2S
   player.setPinout(5, 7, 6, 8, 4);
 
-  // 4. 初始化 ES8311 解码芯片
+  // 初次配置与状态打印
   es8311_init_chip();
+  es8311_dump_status();
 #endif
   _width  = w;
   _height = h;
@@ -158,6 +185,19 @@ void TouchScreen::loop(){
   static uint32_t touchLongPress;
   static tsDirection_e direct;
   static uint16_t touchVol, touchStation;
+
+  // 核心：当网络流开始播放且 I2S 硬件时钟开始振荡后，重新对 ES8311 注入配置并打印状态
+  static bool last_running = false;
+  bool is_running = player.isRunning();
+  if (is_running && !last_running) {
+    digitalWrite(1, LOW);
+    player.setPinout(5, 7, 6, 8, 4);
+    es8311_init_chip();
+    Serial.println("[PLAYER] 检测到音频流已起播，已重新激活 ES8311 并锁定时钟！");
+    es8311_dump_status();
+  }
+  last_running = is_running;
+
   if (!_checklpdelay(20, _touchdelay)) return;
 #if TS_MODEL==TS_MODEL_GT911
   ts.read();
